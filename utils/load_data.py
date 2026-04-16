@@ -105,3 +105,61 @@ def link_user_to_sms(user: Dict[str, Any], sms_dataset: List[Dict[str, str]], co
             user_sms_history.append(sms_entry)
             
     return user_sms_history
+
+
+
+# for the location analysis
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """
+    Calculate the great circle distance between two points 
+    on the earth (specified in decimal degrees)
+    """
+    # Convert decimal degrees to radians 
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+
+    # Haversine formula 
+    dlat = lat2 - lat1 
+    dlon = lon2 - lon1 
+    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+    c = 2 * np.arcsin(np.sqrt(a)) 
+    r = 6371 # Radius of earth in kilometers. Use 3956 for miles
+    return c * r
+
+def extract_spatial_timeseries(df, lat_col='lat', lon_col='lng', time_col='timestamp'):
+    """
+    Extract spatial timseries for the locations analysis.
+    Requires df to be 'groupby' with 'biotag'.
+    """
+    results = {}
+    for biotag, group in df:
+        # We shift the lat/lon to get the "previous" point's coordinates
+        lats = group[lat_col].values
+        lons = group[lon_col].values
+        
+        # Calculate distance between point i and point i-1
+        distances = [0] # First point has 0 distance traveled
+        for i in range(1, len(group)):
+            d = haversine_distance(lats[i-1], lons[i-1], lats[i], lons[i])
+            distances.append(d)
+        
+        group['step_distance'] = distances
+        
+        # 3. Time Delta (for velocity)
+        # Convert nanoseconds to hours for km/h
+        time_diffs = group[time_col].diff().dt.total_seconds() / 3600
+        group['velocity'] = group['step_distance'] / time_diffs
+        
+        # 4. Spatial Metrics
+        results[biotag] = {
+            'total_dist': group['step_distance'].sum(),
+            'avg_velocity': group['velocity'].replace([np.inf, -np.inf], np.nan).mean(),
+            'max_velocity': group['velocity'].max(),
+            # Centroid (Mean location)
+            'center': (group[lat_col].mean(), group[lon_col].mean()),
+            # Radius of Gyration (how far the user typically wanders from their center)
+            'spatial_variance': np.sqrt(np.mean(
+                haversine_distance(group[lat_col].mean(), group[lon_col].mean(), lats, lons)**2
+            ))
+        }
+        
+    return results
